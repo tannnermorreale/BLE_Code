@@ -1,0 +1,214 @@
+// Created by Tanner Morreale and Professor Edgar Bolivar Nieto
+// Weable Robotics Lab
+// Code was influenced by exisiting Adafruit example codes
+
+#include <bluefruit.h>
+#include <Adafruit_BNO08x.h>
+
+#define BNO08X_CS 10
+#define BNO08X_INT 9
+#define BNO08X_RESET -1
+
+Adafruit_BNO08x  bno08x(BNO08X_RESET);
+sh2_SensorValue_t sensorValue;
+
+BLEDfu bledfu;
+BLEUart bleuart;
+BLEClientUart clientUart;
+
+void setup()
+{
+  Serial.begin(115200);
+  while ( !Serial ) delay(10);
+
+  Serial.println("Device is running");
+ 
+
+   if (!bno08x.begin_I2C()) {
+    Serial.println("Failed to find BNO08x chip");
+    while (1) { delay(10); }
+  }
+  Serial.println("BNO08x Found!");
+
+    for (int n = 0; n < bno08x.prodIds.numEntries; n++) {
+    Serial.print("Part ");
+    Serial.print(bno08x.prodIds.entry[n].swPartNumber);
+    Serial.print(": Version :");
+    Serial.print(bno08x.prodIds.entry[n].swVersionMajor);
+    Serial.print(".");
+    Serial.print(bno08x.prodIds.entry[n].swVersionMinor);
+    Serial.print(".");
+    Serial.print(bno08x.prodIds.entry[n].swVersionPatch);
+    Serial.print(" Build ");
+    Serial.println(bno08x.prodIds.entry[n].swBuildNumber);
+  }
+
+  setReports();
+
+  Serial.println("Reading events");
+  Bluefruit.begin(1, 1);
+  Bluefruit.setTxPower(4);
+  Bluefruit.Periph.setConnectCallback(prph_connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(prph_disconnect_callback);
+  Bluefruit.Central.setConnectCallback(cent_connect_callback);
+  Bluefruit.Central.setDisconnectCallback(cent_disconnect_callback);
+  bledfu.begin();
+  bleuart.begin();
+  bleuart.setRxCallback(prph_bleuart_rx_callback);
+  clientUart.begin();
+  clientUart.setRxCallback(cent_bleuart_rx_callback);
+
+  Bluefruit.Scanner.setRxCallback(scan_callback);
+  Bluefruit.Scanner.restartOnDisconnect(true);
+  Bluefruit.Scanner.setInterval(160, 80); 
+  Bluefruit.Scanner.filterUuid(bleuart.uuid);
+  Bluefruit.Scanner.useActiveScan(false);
+  Bluefruit.Scanner.start(0);  
+
+
+  startAdv();
+}
+
+void setReports(void) {
+  Serial.println("Setting desired reports");
+  if (! bno08x.enableReport(SH2_GAME_ROTATION_VECTOR)) {
+    Serial.println("Could not enable game vector");
+  }
+}
+
+void startAdv(void)
+{
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+
+  Bluefruit.Advertising.addService(bleuart);
+
+  Bluefruit.ScanResponse.addName();
+
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.setInterval(32, 244);  
+  Bluefruit.Advertising.setFastTimeout(30); 
+  Bluefruit.Advertising.start(0);  
+}
+
+void loop()
+{
+  delay(1000);
+
+  if (bno08x.wasReset()) {
+    Serial.print("sensor was reset ");
+    setReports();
+  }
+ 
+  if (! bno08x.getSensorEvent(&sensorValue)) {
+    return;
+  }
+ 
+  switch (sensorValue.sensorId) {
+   
+    case SH2_GAME_ROTATION_VECTOR:
+  
+      bleuart.print("R: ");
+      bleuart.print(sensorValue.un.gameRotationVector.real);
+      bleuart.print("i: ");
+      bleuart.print(sensorValue.un.gameRotationVector.i);
+      bleuart.print("j: ");
+      bleuart.print(sensorValue.un.gameRotationVector.j);
+      bleuart.print("k: ");
+      bleuart.print(sensorValue.un.gameRotationVector.k);
+      break;
+  }
+
+}
+
+void prph_connect_callback(uint16_t conn_handle)
+{
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  char peer_name[32] = { 0 };
+  connection->getPeerName(peer_name, sizeof(peer_name));
+
+  Serial.print("[Prph] Connected to ");
+  Serial.println(peer_name);
+}
+
+void prph_disconnect_callback(uint16_t conn_handle, uint8_t reason)
+{
+  (void) conn_handle;
+  (void) reason;
+
+  Serial.println();
+  Serial.println("[Prph] Disconnected");
+}
+
+void prph_bleuart_rx_callback(uint16_t conn_handle)
+{
+  (void) conn_handle;
+ 
+  char str[20+1] = { 0 };
+  bleuart.read(str, 20);
+
+  Serial.print("[Prph] RX: ");
+  Serial.println(str);  
+
+  if ( clientUart.discovered() )
+  {
+    clientUart.print(str);
+  }else
+  {
+    bleuart.println("[Prph] Central role not connected");
+  }
+}
+
+void scan_callback(ble_gap_evt_adv_report_t* report)
+{
+  Bluefruit.Central.connect(report);
+}
+
+void cent_connect_callback(uint16_t conn_handle)
+{
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  char peer_name[32] = { 0 };
+  connection->getPeerName(peer_name, sizeof(peer_name));
+
+  Serial.print("[Cent] Connected to ");
+  Serial.println(peer_name);;
+
+  if ( clientUart.discover(conn_handle) )
+  {
+    clientUart.enableTXD();
+  }else
+  {
+    Bluefruit.disconnect(conn_handle);
+  }  
+}
+
+void cent_disconnect_callback(uint16_t conn_handle, uint8_t reason)
+{
+  (void) conn_handle;
+  (void) reason;
+ 
+  Serial.println("[Cent] Disconnected");
+}
+
+void cent_bleuart_rx_callback(BLEClientUart& cent_uart)
+{
+  char str[20+1] = { 0 };
+  cent_uart.read(str, 20);
+     
+  Serial.print("[Cent] RX: ");
+  Serial.println(str);
+
+  if ( bleuart.notifyEnabled() )
+  {
+
+    bleuart.print( str );
+    bleuart.write("Work write");
+    bleuart.print("work print");
+  }else
+  {
+
+    clientUart.println("[Cent] Peripheral role not connected");
+  }  
+}
